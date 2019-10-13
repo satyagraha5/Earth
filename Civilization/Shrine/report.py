@@ -31,5 +31,11 @@ def save_env_on_filename(args):
             continue
         if "gpu" in arg:
             continue
+        if "teacher" in arg:
+            continue
+        if "student" in arg:
+            continue
+        if "attention" in args:
+            continue
         filename += "{}_{}_".format(arg, value)
     return filename

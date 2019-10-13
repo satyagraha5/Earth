@@ -14,6 +14,7 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 import torchvision.utils as utils
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import StepLR
 
 #Custom Modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -39,6 +40,8 @@ def set_args():
     parser.add_argument("--gpu",                type = int,     default = 2)
     parser.add_argument("--batch_size",         type = int,     default = 32)
     parser.add_argument("--epoch",              type = int,     default = 30)
+    parser.add_argument('--interval',           type = int,     default = 30)
+    parser.add_argument('--gamma',              type = float,   default = 0.1)
     return parser.parse_args()
 
 
@@ -64,7 +67,7 @@ if __name__ == "__main__":
     student_criterion = nn.CrossEntropyLoss()
     attention_criterion = nn.MSELoss()
     student_optimizer = torch.optim.SGD(model.parameters(), lr = args.learning_rate, weight_decay = 0.0001, momentum = 0.1)
-    #student_optimizer = torch.optim.Adam(model.parameters(), lr = args.learning_rate, betas = (args.beta0, args.beta1))
-    model.fit(train_loader, test_loader, student_criterion, attention_criterion, student_optimizer, num_epochs = args.epoch)
+    scheduler = StepLR(student_optimizer, step_size=30, gamma=0.1)
+    model.fit(train_loader, test_loader, student_criterion, attention_criterion, student_optimizer, args.epoch, scheduler)
     writer = model.report()
     writer.close()

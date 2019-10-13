@@ -1,63 +1,66 @@
-#!/home/atheist8E/anaconda3/bin/python
+def fit(self, train_loader, test_loader, student_criterion, attention_criterion, student_optimizer, num_epochs):
+        for epoch in tqdm(range(1, num_epochs + 1)):
+            print()
+            #Train
+            for i, (train_images, train_labels) in enumerate(train_loader, start = 1):
+                try:
+                    self.train()
+                    train_images = train_images.cuda(self.args.gpu)
+                    train_labels = train_labels.cuda(self.args.gpu)
+                    
+                    #Student
+                    student_train_outputs = self.forward(train_images)
+                    student_train_loss = student_criterion(student_train_outputs, train_labels)
+                    (self.writer).add_scalar("Student Train Loss", student_train_loss.item(), len(train_loader.dataset) * epoch + i)
+                    train_top_1_accuracy, train_top_5_accuracy = self.score(student_train_outputs, train_labels)
+                    (self.writer).add_scalar("Train Top 1 Accuracy", train_top_1_accuracy, len(train_loader.dataset) * epoch + i)
+                    (self.writer).add_scalar("Train Top 5 Accuracy", train_top_5_accuracy, len(train_loader.dataset) * epoch + i)
 
+                    #Attention
+                    teacher_feature_maps = self.get_teacher_feature_map(train_images)
+                    attention_train_loss = list(range(4))
+                    projected_teacher_feature_maps = list(range(4))
+                    for location in range(4):
+                        projected_teacher_feature_maps[location] = self.feature_map_projection(teacher_feature_maps[location], self.attention_feature_maps[location])
+                        attention_train_loss[location] = attention_criterion(projected_teacher_feature_maps[location], self.attention_feature_maps[location])
+                        (self.writer).add_scalar("Attention Train Loss {}".format(location), attention_train_loss[location].item(), len(train_loader.dataset) * epoch + i)
+                    
+                    #Combine & Backward
+                    total_train_loss = self.total_loss(student_train_loss, attention_train_loss)
+                    (self.writer).add_scalar("Total Train Loss", total_train_loss.item(), len(train_loader.dataset) * epoch + i)
+                    student_optimizer.zero_grad()
+                    total_train_loss.backward()
+                    student_optimizer.step()
+                    
+                    #Validation
+                    report_point = int(len(train_loader.dataset) / self.args.batch_size * 0.001)
+                    if i % report_point == 0:
+                        for i, (val_images, val_labels) in enumerate(test_loader, start = 1):
+                            with torch.no_grad():
+                                self.eval()
+                                val_images = val_images.cuda(self.args.gpu)
+                                val_labels = val_labels.cuda(self.args.gpu)
+                                student_val_outputs = self.forward(val_images)
+                                student_val_loss = student_criterion(student_val_outputs, val_labels)
+                                total_val_loss = student_val_loss
+                                val_top_1_accuracy, val_top_5_accuracy = self.score(student_val_outputs, val_labels)
+                                (self.writer).add_scalar("Student Validation Loss", student_val_loss.item(), len(train_loader.dataset) * epoch + i)
+                                (self.writer).add_scalar("Validation Top 1 Accuracy", val_top_1_accuracy, len(train_loader.dataset) * epoch + i)
+                                (self.writer).add_scalar("Validation Top 5 Accuracy", val_top_5_accuracy, len(train_loader.dataset) * epoch + i)
 
-#Basic Modules
-import os
-import sys
-import argparse
-import numpy as np
-from datetime import datetime
+                                teacher_feature_maps = self.get_teacher_feature_map(val_images)
+                                attention_val_loss = list(range(4))
+                                projected_teacher_feature_maps = list(range(4))
+                                for location in range(4):
+                                    projected_teacher_feature_maps[location] = self.feature_map_projection(teacher_feature_maps[location], self.attention_feature_maps[location])
+                                    attention_val_loss[location] = attention_criterion(projected_teacher_feature_maps[location], self.attention_feature_maps[location])
+                                    (self.writer).add_scalar("Attention Validation Loss {}".format(location), attention_val_loss[location].item(), len(train_loader.dataset) * epoch + i)
+                                total_val_loss = self.total_loss(student_val_loss, attention_val_loss)
+                                (self.writer).add_scalar("Total Validation Loss", total_val_loss.item(), len(train_loader.dataset) * epoch + i)
 
-#Pytorch
-import torch
-import torch.nn as nn
-import torchvision.transforms as transforms
-import torchvision.utils as utils
-from torch.utils.tensorboard import SummaryWriter
-
-#Custom Modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from Shrine.architecture import *
-from Shrine.dataset import *
-from Shrine.report import *
-
-
-def set_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--training_path", type = str, default = "/share/Datasets/ImageNet/Subset/train")
-    parser.add_argument("--validation_path", type = str, default = "/share/Datasets/ImageNet/Subset/val")
-    parser.add_argument("--gpu", type = int, default = 2)
-    parser.add_argument("--batch_size", type = int, default = 32)
-    parser.add_argument("--epoch", type = int, default = 30)
-    parser.add_argument("--learning_rate", type = float, default = 0.01)
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    args = set_args()
-    writer = SummaryWriter(log_dir = "/home/atheist8E/Earth/Civilization/Alexandria/SophistNet_v1_batch_size_{}_epoch_{}_learning_rate_{}_time_{}".format(args.batch_size,args.epoch,args.learning_rate,datetime.now().strftime("%Y_%m_%d_%H_%M_%S")))
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean = [0.485, 0.456, 0.406],
-            std = [0.229, 0.224, 0.225])
-    ])
-    test_transform = transforms.Compose([
-        transforms.RandomResizedCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean = [0.485, 0.456, 0.406],
-            std = [0.229, 0.224, 0.225])
-    ])
-    train_loader, test_loader = ImageNet(args, train_transform, test_transform)
-    model = SophistNet_v2(args, writer).cuda(args.gpu)
-    student_criterion = nn.CrossEntropyLoss()
-    attention_criterion = nn.MSELoss()
-    #TODO model.parameters wrap up function get_student_parameters / get_attention_parameters
-    student_optimizer = torch.optim.SGD(model.conv1.parameters(), lr = args.learning_rate, weight_decay = 0.0001, momentum = 0.1)
-    print(student_optimizer.param_groups)
-    student_optimizer.add_param_group({'params': model.fc.parameters()})
-    print(student_optimizer.param_groups)
-
-    writer = model.report()
-    writer.close()
+                                print("Epoch: {} [{}/{}({:.0f}%)]\n\tTotal Train Loss: {:.2f} Student/Attention Train Loss: {:.2f}/{:.2f},{:.2f},{:.2f},{:.2f} Train Top 1 Accuracy: {:.2f} Train Top 5 Accuracy: {:.2f}\n\tTotal Val Loss: {:.2f} Student/Attention Val Loss: {:.2f}/{:.2f},{:.2f},{:.2f},{:.2f} Val Top 1 Accuracy: {:.2f} Val Top 5 Accuracy: {:.2f}".format(epoch,
+                                    i * self.args.batch_size, len(train_loader.dataset), 100. * i / len(train_loader),
+                                    total_train_loss.item(), student_train_loss.item(), attention_train_loss[0].item(), attention_train_loss[1].item(), attention_train_loss[2].item(), attention_train_loss[3].item(), train_top_1_accuracy, train_top_5_accuracy, 
+                                    total_val_loss.item(), student_val_loss.item(), attention_val_loss[0].item(), attention_val_loss[1].item(), attention_val_loss[2].item(), attention_val_loss[3].item(), val_top_1_accuracy, val_top_5_accuracy))
+                except IndexError:
+                    continue

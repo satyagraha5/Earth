@@ -25,6 +25,6 @@ def CIFAR100(train_transform, test_transform, batch_size = 100):
 def ImageNet(args, train_transform, test_transform):
     train_dataset = torchvision.datasets.ImageFolder(root = args.training_path, transform = train_transform)
     test_dataset = torchvision.datasets.ImageFolder(root = args.validation_path, transform = test_transform)
-    train_loader = torch.utils.data.DataLoader(dataset = train_dataset, batch_size = args.batch_size, shuffle = True, num_workers = 4, pin_memory = True)
-    test_loader = torch.utils.data.DataLoader(dataset = test_dataset, batch_size = args.batch_size, shuffle = True, num_workers = 4, pin_memory = True)
+    train_loader = torch.utils.data.DataLoader(dataset = train_dataset, batch_size = args.batch_size, shuffle = True, num_workers = 2, pin_memory = True)
+    test_loader = torch.utils.data.DataLoader(dataset = test_dataset, batch_size = args.batch_size, shuffle = True, num_workers = 2, pin_memory = True)
     return train_loader, test_loader

@@ -35,8 +35,9 @@ class MyNeuralNetwork(nn.Module):
                     train_loss.backward()
                     optimizer.step()
                     (self.writer).add_scalar("Train Loss", train_loss.item(), len(train_loader.dataset) * epoch + i)
-                    train_accuracy = self.score(train_outputs, train_labels)
-                    (self.writer).add_scalar("Train Accuracy", train_accuracy, len(train_loader.dataset) * epoch + i)
+                    train_top_1_accuracy, train_top_5_accuracy = self.score(train_outputs, train_labels)
+                    (self.writer).add_scalar("Train Top 1 Accuracy", train_top_1_accuracy, len(train_loader.dataset) * epoch + i)
+                    (self.writer).add_scalar("Train Top 5 Accuracy", train_top_5_accuracy, len(train_loader.dataset) * epoch + i)
                 #Validation
                 five_percent = int(len(train_loader.dataset) / self.args.batch_size * 0.05)
                 if i % five_percent == 0:
@@ -48,18 +49,28 @@ class MyNeuralNetwork(nn.Module):
                         val_outputs = self.forward(val_images)
                         val_loss = criterion(val_outputs, val_labels)
                         (self.writer).add_scalar("Validation Loss", val_loss.item(), len(train_loader.dataset) * epoch + i)
-                        val_accuracy = self.score(val_outputs, val_labels)
-                        (self.writer).add_scalar("Validation Accuracy", val_accuracy, len(train_loader.dataset) * epoch + i)
-                        print("Epoch: {} [{}/{} ({:.0f}%)] Train Loss: {:.6f} Train Accuracy: {:.6f} Validation Loss: {:.6f} Validation Accuracy: {:.6f}".format(epoch,
+                        val_top_1_accuracy, val_top_5_accuracy = self.score(val_outputs, val_labels)
+                        (self.writer).add_scalar("Validation Top 1 Accuracy", val_top_1_accuracy, len(train_loader.dataset) * epoch + i)
+                        (self.writer).add_scalar("Validation Top 5 Accuracy", val_top_5_accuracy, len(train_loader.dataset) * epoch + i)
+                        print("Epoch: {} [{}/{} ({:.0f}%)]\n\tTrain Loss: {:.2f} Train Top 1 Accuracy: {:.2f} Train Top 5 Accuracy: {:.2f}\n\tValidation Loss: {:.2f} Validation Top 1 Accuracy: {:.2f} Validation Top 5 Accuracy: {:.2f}".format(epoch,
                             i * self.args.batch_size, len(train_loader.dataset),
                             100. * i / len(train_loader),
-                            train_loss.item(), train_accuracy,
-                            val_loss.item(), val_accuracy))
+                            train_loss.item(), train_top_1_accuracy, train_top_5_accuracy,
+                            val_loss.item(), val_top_1_accuracy, val_top_5_accuracy))
 
     def score(self, outputs, labels):
-        max_vals, max_indices = outputs.max(1)
-        accuracy = (max_indices == labels).float().sum()/max_indices.size()[0]
-        return accuracy
+        top_vals, top_indices = outputs.topk(5)
+        top_1_accuracy = 0.0
+        top_5_accuracy = 0.0
+        for i_th_batch in range(self.args.batch_size):
+            top_1_accuracy += (top_indices[i_th_batch][0] == labels[i_th_batch]).float()
+            for top_k in range(5):
+                if (top_indices[i_th_batch][top_k] == labels[i_th_batch]):
+                    top_5_accuracy += 1.0
+                    break
+        top_1_accuracy /= self.args.batch_size
+        top_5_accuracy /= self.args.batch_size
+        return top_1_accuracy, top_5_accuracy
 
     def report(self):
         return self.writer
@@ -734,20 +745,16 @@ class IcarusNet(MyNeuralNetwork):
         projected_feature_map = torch.zeros_like(student_feature_map)
         for i_th_batch in range(self.args.batch_size):
             for i_th_channel in range(num_channels):
-                try:
-                    if i_th_channel % 4 == 0:
-                        feature_map = teacher_feature_map[i_th_batch][i_th_channel]
-                    elif i_th_channel % 4 == 1:
-                        feature_map += teacher_feature_map[i_th_batch][i_th_channel]
-                    elif i_th_channel % 4 == 2:
-                        feature_map += teacher_feature_map[i_th_batch][i_th_channel]
-                    elif i_th_channel % 4 == 3:
-                        feature_map += teacher_feature_map[i_th_batch][i_th_channel]
-                        feature_map /= 4
-                        projected_feature_map[i_th_batch][i_th_channel//4] = feature_map
-                except IndexError as e:
-                    print("IndexError: {}\n".format(e))
-                    print("Index: i_th_batch - {} i_th_channel - {}\n".format(i_th_batch, i_th_channel))
+                if i_th_channel % 4 == 0:
+                    feature_map = teacher_feature_map[i_th_batch][i_th_channel]
+                elif i_th_channel % 4 == 1:
+                    feature_map += teacher_feature_map[i_th_batch][i_th_channel]
+                elif i_th_channel % 4 == 2:
+                    feature_map += teacher_feature_map[i_th_batch][i_th_channel]
+                elif i_th_channel % 4 == 3:
+                    feature_map += teacher_feature_map[i_th_batch][i_th_channel]
+                    feature_map /= 4
+                    projected_feature_map[i_th_batch][i_th_channel//4] = feature_map
         return projected_feature_map
 
     def total_loss(self, student_loss, attention_loss_list):
@@ -756,21 +763,27 @@ class IcarusNet(MyNeuralNetwork):
             total_loss += self.attention_weights[i] * attention_loss
         return total_loss
     
-    def fit(self, train_loader, test_loader, student_criterion, attention_criterion, student_optimizer, num_epochs):
+    def fit(self, train_loader, test_loader, student_criterion, attention_criterion, student_optimizer, num_epochs, scheduler):
         for epoch in tqdm(range(1, num_epochs + 1)):
             print()
             test_loader_iterator = iter(test_loader)
             #Train
             for i, (train_images, train_labels) in enumerate(train_loader, start = 1):
+                b, _, _, _ = train_images.shape
+                if b != self.args.batch_size:
+                    print("b: {}".format(b))
+                    continue
                 self.train()
                 train_images = train_images.cuda(self.args.gpu)
                 train_labels = train_labels.cuda(self.args.gpu)
-                
+                    
                 #Student
                 student_train_outputs = self.forward(train_images)
                 student_train_loss = student_criterion(student_train_outputs, train_labels)
                 (self.writer).add_scalar("Student Train Loss", student_train_loss.item(), len(train_loader.dataset) * epoch + i)
-                (self.writer).add_scalar("Train Accuracy", self.score(student_train_outputs, train_labels), len(train_loader.dataset) * epoch + i)
+                train_top_1_accuracy, train_top_5_accuracy = self.score(student_train_outputs, train_labels)
+                (self.writer).add_scalar("Train Top 1 Accuracy", train_top_1_accuracy, len(train_loader.dataset) * epoch + i)
+                (self.writer).add_scalar("Train Top 5 Accuracy", train_top_5_accuracy, len(train_loader.dataset) * epoch + i)
 
                 #Attention
                 teacher_feature_maps = self.get_teacher_feature_map(train_images)
@@ -780,14 +793,14 @@ class IcarusNet(MyNeuralNetwork):
                     projected_teacher_feature_maps[location] = self.feature_map_projection(teacher_feature_maps[location], self.attention_feature_maps[location])
                     attention_train_loss[location] = attention_criterion(projected_teacher_feature_maps[location], self.attention_feature_maps[location])
                     (self.writer).add_scalar("Attention Train Loss {}".format(location), attention_train_loss[location].item(), len(train_loader.dataset) * epoch + i)
-                
+                    
                 #Combine & Backward
                 total_train_loss = self.total_loss(student_train_loss, attention_train_loss)
                 (self.writer).add_scalar("Total Train Loss", total_train_loss.item(), len(train_loader.dataset) * epoch + i)
                 student_optimizer.zero_grad()
                 total_train_loss.backward()
                 student_optimizer.step()
-                
+                    
                 #Validation
                 report_point = int(len(train_loader.dataset) / self.args.batch_size * 0.001)
                 if i % report_point == 0:
@@ -799,8 +812,10 @@ class IcarusNet(MyNeuralNetwork):
                         student_val_outputs = self.forward(val_images)
                         student_val_loss = student_criterion(student_val_outputs, val_labels)
                         total_val_loss = student_val_loss
+                        val_top_1_accuracy, val_top_5_accuracy = self.score(student_val_outputs, val_labels)
                         (self.writer).add_scalar("Student Validation Loss", student_val_loss.item(), len(train_loader.dataset) * epoch + i)
-                        (self.writer).add_scalar("Validation Accuracy", self.score(student_val_outputs, val_labels), len(train_loader.dataset) * epoch + i)
+                        (self.writer).add_scalar("Validation Top 1 Accuracy", val_top_1_accuracy, len(train_loader.dataset) * epoch + i)
+                        (self.writer).add_scalar("Validation Top 5 Accuracy", val_top_5_accuracy, len(train_loader.dataset) * epoch + i)
 
                         teacher_feature_maps = self.get_teacher_feature_map(val_images)
                         attention_val_loss = list(range(4))
@@ -812,12 +827,12 @@ class IcarusNet(MyNeuralNetwork):
                         total_val_loss = self.total_loss(student_val_loss, attention_val_loss)
                         (self.writer).add_scalar("Total Validation Loss", total_val_loss.item(), len(train_loader.dataset) * epoch + i)
 
-                        print("Epoch: {} [{}/{}({:.0f}%)] Total Train Loss: {:.2f} Student/Attention Train Loss: {:.2f}/{:.2f},{:.2f},{:.2f},{:.2f} Train Accuracy: {:.2f} Total Val Loss: {:.2f} Student/Attention Val Loss: {:.2f}/{:.2f},{:.2f},{:.2f},{:.2f} Val Accuracy: {:.2f}".format(epoch,
+                        print("Epoch: {} [{}/{}({:.0f}%)]\n\tTotal Train Loss: {:.2f} Student/Attention Train Loss: {:.2f}/{:.2f},{:.2f},{:.2f},{:.2f} Train Top 1 Accuracy: {:.2f} Train Top 5 Accuracy: {:.2f}\n\tTotal Val Loss: {:.2f} Student/Attention Val Loss: {:.2f}/{:.2f},{:.2f},{:.2f},{:.2f} Val Top 1 Accuracy: {:.2f} Val Top 5 Accuracy: {:.2f}".format(epoch,
                             i * self.args.batch_size, len(train_loader.dataset), 100. * i / len(train_loader),
-                            total_train_loss.item(), student_train_loss.item(), attention_train_loss[0].item(), attention_train_loss[1].item(), attention_train_loss[2].item(), attention_train_loss[3].item(), self.score(student_train_outputs, train_labels), 
-                            total_val_loss.item(), student_val_loss.item(), attention_val_loss[0].item(), attention_val_loss[1].item(), attention_val_loss[2].item(), attention_val_loss[3].item(), self.score(student_val_outputs, val_labels)))
-
-
+                            total_train_loss.item(), student_train_loss.item(), attention_train_loss[0].item(), attention_train_loss[1].item(), attention_train_loss[2].item(), attention_train_loss[3].item(), train_top_1_accuracy, train_top_5_accuracy, 
+                            total_val_loss.item(), student_val_loss.item(), attention_val_loss[0].item(), attention_val_loss[1].item(), attention_val_loss[2].item(), attention_val_loss[3].item(), val_top_1_accuracy, val_top_5_accuracy))
+            scheduler.step()
+            
 class IcarusNet_v1(IcarusNet):
     #loss = loss + sum(lambda * loss) | SE Attention
     def __init__(self, args, writer):
